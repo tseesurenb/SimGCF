@@ -1,0 +1,9 @@
+cold_type: i
+percentage: 15
+description: Cold Items 15% (1-5 interactions)
+max_interactions: 5
+original_train: 79619
+new_train: 69465
+cold_users: 0
+cold_items: 185
+seed: 42
