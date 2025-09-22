@@ -13,6 +13,64 @@ from model import RecSysGNN
 from config import config, C
 from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau
 
+class WarmupScheduler:
+    def __init__(self, optimizer, warmup_steps, start_lr, target_lr, after_scheduler=None):
+        self.optimizer = optimizer
+        self.warmup_steps = warmup_steps
+        self.start_lr = start_lr
+        self.target_lr = target_lr
+        self.after_scheduler = after_scheduler
+        self.current_step = 0
+        self.warmup_complete = False
+        self.best_metric = None
+        self.epochs_without_improvement = 0
+        
+        # Set initial learning rate
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = start_lr
+    
+    def step(self, metric=None):
+        if self.current_step < self.warmup_steps:
+            # Linear warmup
+            progress = (self.current_step + 1) / self.warmup_steps
+            lr = self.start_lr + (self.target_lr - self.start_lr) * progress
+            
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = lr
+            
+            self.current_step += 1
+        else:
+            # Warmup complete, use after_scheduler if provided
+            if not self.warmup_complete:
+                self.warmup_complete = True
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = self.target_lr
+                print(f"\n{C.GREEN}Warmup complete! Switching to plateau scheduler (LR: {self.target_lr:.2e}){C.RESET}")
+            
+            if self.after_scheduler:
+                if isinstance(self.after_scheduler, ReduceLROnPlateau) and metric is not None:
+                    # Track best metric ourselves for better control
+                    if self.best_metric is None or metric > self.best_metric:
+                        self.best_metric = metric
+                        self.epochs_without_improvement = 0
+                    else:
+                        self.epochs_without_improvement += 1
+                    
+                    # Track LR before and after step
+                    old_lr = self.optimizer.param_groups[0]['lr']
+                    self.after_scheduler.step(metric)
+                    new_lr = self.optimizer.param_groups[0]['lr']
+                    
+                    # Show patience info when LR changes or when close to triggering
+                    patience = self.after_scheduler.patience
+                    if old_lr != new_lr:
+                        print(f"\n{C.BLUE}Plateau scheduler reduced LR: {old_lr:.2e} → {new_lr:.2e} (patience exhausted: {self.epochs_without_improvement}/{patience}){C.RESET}")
+                        self.epochs_without_improvement = 0  # Reset counter after LR reduction
+                    elif self.epochs_without_improvement >= patience - 2 and self.epochs_without_improvement > 0:
+                        print(f"\n{C.YELLOW}Warning: Plateau patience {self.epochs_without_improvement}/{patience} (LR will reduce in {patience - self.epochs_without_improvement} epochs){C.RESET}")
+                elif not isinstance(self.after_scheduler, ReduceLROnPlateau):
+                    self.after_scheduler.step()
+
 def compute_bpr_loss(users, u_emb, pos_emb, neg_emb, u_emb0, pos_emb0, neg_emb0, model=None):
     # Standard BPR loss for SimGCF and LightGCN
     pos_scores = torch.mul(u_emb, pos_emb).sum(dim=1)
@@ -33,6 +91,12 @@ def create_lr_scheduler(optimizer, stype):
         return StepLR(optimizer, step_size=config['lr_step'], gamma=config['lr_factor'])
     elif stype == 'plateau':
         return ReduceLROnPlateau(optimizer, mode='max', factor=config['lr_factor'], patience=config['lr_patience'], min_lr=config['min_lr'])
+    elif stype == 'warmup':
+        # Create after_scheduler (defaults to plateau after warmup)
+        after_scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=config['lr_factor'], 
+                                          patience=config['lr_patience'], min_lr=config['min_lr'])
+        return WarmupScheduler(optimizer, config['warmup_steps'], config['warmup_start_lr'], 
+                             config['lr'], after_scheduler)
     return None
 
 
@@ -112,17 +176,23 @@ def run_experiment(dataset_name, exp_n=1, g_seed=42, device='cpu', verbose=-1):
                 old_lr = opt.param_groups[0]['lr']
                 if config['lr_sched'] == 'plateau':
                     scheduler.step(ncdg)
+                elif config['lr_sched'] == 'warmup':
+                    scheduler.step(ncdg)  # Pass metric for after_scheduler
                 else:
                     scheduler.step()
                 
-                # Enforce minimum learning rate
-                for param_group in opt.param_groups:
-                    if param_group['lr'] < 0.001:
-                        param_group['lr'] = 0.001
+                # Enforce minimum learning rate (skip for warmup during warmup phase)
+                if not (config['lr_sched'] == 'warmup' and isinstance(scheduler, WarmupScheduler) and scheduler.current_step <= scheduler.warmup_steps):
+                    for param_group in opt.param_groups:
+                        if param_group['lr'] < 0.001:
+                            param_group['lr'] = 0.001
                 
                 new_lr = opt.param_groups[0]['lr']
                 if verbose >= 1 and old_lr != new_lr:
-                    print(f"\n{C.BLUE}LR changed: {old_lr:.2e} → {new_lr:.2e}{C.RESET}")
+                    if config['lr_sched'] == 'warmup' and isinstance(scheduler, WarmupScheduler) and scheduler.current_step < scheduler.warmup_steps:
+                        print(f"\n{C.YELLOW}Warmup LR: {old_lr:.2e} → {new_lr:.2e} (step {scheduler.current_step}/{scheduler.warmup_steps}){C.RESET}")
+                    else:
+                        print(f"\n{C.BLUE}LR changed: {old_lr:.2e} → {new_lr:.2e}{C.RESET}")
             
             current_lr = opt.param_groups[0]['lr']
             pbar.set_postfix_str(f"prec {C.RED}{prec:.4f}{C.RESET} | recall {C.RED}{recall:.4f}{C.RESET} | ncdg {C.RED}{ncdg:.4f}{C.RESET} ({best_ncdg:.4f}, {best_recall:.4f}, {best_prec:.4f} at {best_epoch:3}, lr {current_lr:.2e})")

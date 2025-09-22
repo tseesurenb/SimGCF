@@ -14,6 +14,7 @@ class Colors:
     RED = "\033[1;31m"      # br - bold red
     BLUE = "\033[1;34m"     # bb - bold blue  
     GREEN = "\033[1;32m"    # bg - bold green
+    YELLOW = "\033[1;33m"   # by - bold yellow
     BOLD = "\033[1m"        # b - bold
     RESET = "\033[0m"       # rs - reset
 
@@ -46,10 +47,12 @@ def parse_args():
     parser.add_argument('--eval_K', type=int, default=20, help="@k test list")
     
     # ===== Learning Rate Scheduling =====
-    parser.add_argument('--lr_sched', type=str, default='plateau', help="LR scheduler: 'step', 'plateau', or 'none'")
+    parser.add_argument('--lr_sched', type=str, default='plateau', help="LR scheduler: 'step', 'plateau', 'warmup', or 'none'")
     parser.add_argument('--lr_factor', type=float, default=0.8, help="factor to reduce LR by (for step/plateau scheduler)")
     parser.add_argument('--lr_step', type=int, default=2, help="step size for StepLR scheduler")
-    parser.add_argument('--lr_patience', type=int, default=1, help="patience for ReduceLROnPlateau scheduler")
+    parser.add_argument('--lr_patience', type=int, default=10, help="patience for ReduceLROnPlateau scheduler")
+    parser.add_argument('--warmup_steps', type=int, default=3, help="number of warmup epochs for warmup scheduler")
+    parser.add_argument('--warmup_start_lr', type=float, default=1e-4, help="starting learning rate for warmup")
     
     # ===== Similarity & Graph Configuration =====
     parser.add_argument('--sim', type=str, default='cos', help='similarity metric for both users and items: cos (cosine) or jac (jaccard)')
@@ -95,6 +98,8 @@ config = {
     'lr_factor': args.lr_factor,
     'lr_step': args.lr_step,
     'lr_patience': args.lr_patience,
+    'warmup_steps': args.warmup_steps,
+    'warmup_start_lr': args.warmup_start_lr,
     
     # Similarity & Graph Configuration
     'sim': args.sim,
